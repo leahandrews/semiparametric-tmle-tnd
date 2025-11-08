@@ -1,2 +1,3 @@
 # semiparametric-tmle-tnd
-Code for Semiparametric Methods for Evaluating COVID-19 Vaccine Effectiveness and Immune Correlates Using Test-Negative Design Studies with Missing Data
+Code for "Targeted maximum likelihood estimation of vaccine effectiveness and immune correlates
+in test-negative design studies with missing data"
