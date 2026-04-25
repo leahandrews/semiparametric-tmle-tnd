@@ -2,7 +2,7 @@
 # estimation of vaccine effectiveness and immune correlates 
 # in test-negative design studies with missing data" 
 # Code Created By: Leah I. B. Andrews
-# Date: 04/10/26
+# Last Updated: 04/24/26
 
 
 #### ph2_biased_data_func: Creates Simulated Two-Phase TND Study Dataset ###########
@@ -302,13 +302,13 @@ ph2_biased_data_func <- function(a_betas,a_formula,
 #### ordlogit_func: Runs Ordinary Logistic Regression ########
 
 ### Function inputs:
-# poi_var: string of exposure of interest variable name
+# poi_var: string of the model's exposure variable name
 #  e.g., "A"
-# outcome_var: string of outcome variable name
+# outcome_var: string of the model's outcome variable name
 #  e.g., "Y"
 # model_formula: string of desired logistic regression glm formula
 #  e.g., "Y ~ A + FEMALE + RISKGR1 + CALTIME"
-# missing_var: string of indicator of missing the exposure variable name
+# missing_var: string of indicator of observing the exposure variable name
 #  e.g., "D"
 # oracle_formula: optional string of true data-generating glm formula for 
 #  outcome variable (more relevant when no missing data). Included so user 
@@ -368,40 +368,41 @@ ordlogit_func <- function(poi_var, outcome_var, model_formula,
         Reject = as.integer(pval < 0.05),
         nsamp = nrow(df),
         ncomplete = nrow(complete.df),
-        nVac = with(complete.df, sum(get(outcome_var) == 1)),
-        nCase = with(complete.df, sum(get(poi_var) == 1)),
+        nVac = with(complete.df, sum(get(poi_var) == 1)),
+        nCase = with(complete.df, sum(get(outcome_var) == 1)),
         nW = with(complete.df, sum(W == 1)),
         nC = with(complete.df, sum(C == 1)),
         nVacCase = with(complete.df, sum(get(outcome_var) == 1 & get(poi_var) == 1)),
-        nUnvacCase = with(complete.df, sum(get(outcome_var) == 0 & get(poi_var) == 1)),
-        nVacCaseCom = with(complete.df, sum(get(outcome_var) == 1 & 
-                                            get(poi_var) == 1 & RISKGR1 == "At Risk")),
-        nUnvacCaseCom = with(complete.df, sum(get(outcome_var) == 0 & 
+        nUnvacCase = with(complete.df, sum(get(outcome_var) == 1 & get(poi_var) == 0)),
+        nVacCaseCom = with(complete.df, sum(get(outcome_var) == 1 &
                                               get(poi_var) == 1 & RISKGR1 == "At Risk")),
+        nUnvacCaseCom = with(complete.df, sum(get(outcome_var) == 1 &
+                                                get(poi_var) == 0 & 
+                                                RISKGR1 == "At Risk")),
         nVacCaseNoCom = with(complete.df, sum(get(outcome_var) == 1 & 
-                                              get(poi_var) == 1 & 
+                                                get(poi_var) == 1 &
                                                 RISKGR1 == "Not At Risk")),
-        nUnvacCaseNoCom = with(complete.df, sum(get(outcome_var) == 0 & 
-                                                get(poi_var) == 1 & 
+        nUnvacCaseNoCom = with(complete.df, sum(get(outcome_var) == 1 &
+                                                  get(poi_var) == 0 &
                                                   RISKGR1 == "Not At Risk")),
-        nVacNoncaseCom = with(complete.df, sum(get(outcome_var) == 1 & 
-                                               get(poi_var) == 0 & 
+        nVacNoncaseCom = with(complete.df, sum(get(outcome_var) == 0 &
+                                                 get(poi_var) == 1 &
                                                  RISKGR1 == "At Risk")),
-        nUnvacNoncaseCom = with(complete.df, sum(get(outcome_var) == 0 & 
-                                                 get(poi_var) == 0 & 
+        nUnvacNoncaseCom = with(complete.df, sum(get(outcome_var) == 0 &
+                                                   get(poi_var) == 0 &
                                                    RISKGR1 == "At Risk")),
-        nVacNoncaseNoCom = with(complete.df, sum(get(outcome_var) == 1 & 
-                                                 get(poi_var) == 0 & 
+        nVacNoncaseNoCom = with(complete.df, sum(get(outcome_var) == 0 &
+                                                   get(poi_var) == 1 &
                                                    RISKGR1 == "Not At Risk")),
-        nUnvacNoncaseNoCom = with(complete.df, sum(get(outcome_var) == 0 & 
-                                                   get(poi_var) == 0 & 
+        nUnvacNoncaseNoCom = with(complete.df, sum(get(outcome_var) == 0 &
+                                                     get(poi_var) == 0 &
                                                      RISKGR1 == "Not At Risk")),
         nFemCom = with(complete.df, sum(FEMALE == 1 & RISKGR1 == "At Risk")),
         nMaleCom = with(complete.df, sum(FEMALE == 0 & RISKGR1 == "At Risk")),
         nFemNoCom = with(complete.df, sum(FEMALE == 1 & RISKGR1 == "Not At Risk")),
         nMaleNoCom = with(complete.df, sum(FEMALE == 0 & RISKGR1 == "Not At Risk")),
-        VacObs = with(complete.df, sum(get(outcome_var) == 1))/with(df, sum(get(outcome_var) == 1)),
-        UnvacObs = with(complete.df, sum(get(outcome_var)==0))/with(df, sum(get(outcome_var) == 0)),
+        VacObs = with(complete.df, sum(get(poi_var) == 1))/with(df, sum(get(poi_var) == 1)),
+        UnvacObs = with(complete.df, sum(get(poi_var) == 0))/with(df, sum(get(poi_var) == 0)),
         ComObs = with(complete.df, sum(RISKGR1 == "At Risk"))/with(df, sum(RISKGR1 == "At Risk")),
         NoComObs = with(complete.df, sum(RISKGR1 == "Not At Risk"))/with(df, sum(RISKGR1 == "Not At Risk")),
         FemObs = with(complete.df, sum(FEMALE == 1))/with(df, sum(FEMALE == 1)),
@@ -416,13 +417,13 @@ ordlogit_func <- function(poi_var, outcome_var, model_formula,
 #### twoph_e_logit_func: Two-Phase Logistic Regression Approach w/ Empirical Variance ####
 
 ### Function inputs:
-# poi_var: string of exposure of interest variable name
+# poi_var: string of model's exposure variable name
 #  e.g., "A"
-# outcome_var: string of outcome variable name
+# outcome_var: string of model's outcome variable name
 #  e.g., "Y"
 # model_formula: string of desired logistic regression formula
 #  e.g., "Y ~ A + FEMALE + RISKGR1 + CALTIME"
-# missing_var: string of indicator of missing the exposure variable name
+# missing_var: string of indicator of observing the exposure variable name
 #  e.g., "D"
 # oracle_formula: optional string of true data-generating formula for 
 #  outcome variable (more relevant when no missing data). Included so user 
@@ -488,42 +489,44 @@ twoph_e_logit_func <- function(poi_var = "A", outcome_var = "Y",
         VELL = veCIlow,
         VEUL = veCIhigh,
         PValue = pval,
-        Reject = as.integer(pval<0.05),
+        Reject = as.integer(pval < 0.05),
         nsamp = nrow(df),
         ncomplete = nrow(complete.df),
-        nVac = with(complete.df, sum(get(outcome_var) == 1)),
-        nCase = with(complete.df, sum(get(poi_var) == 1)),
+        nVac = with(complete.df, sum(get(poi_var) == 1)),
+        nCase = with(complete.df, sum(get(outcome_var) == 1)),
         nW = with(complete.df, sum(W == 1)),
         nC = with(complete.df, sum(C == 1)),
         nVacCase = with(complete.df, sum(get(outcome_var) == 1 & get(poi_var) == 1)),
-        nUnvacCase = with(complete.df, sum(get(outcome_var) == 0 & get(poi_var) == 1)),
+        nUnvacCase = with(complete.df, sum(get(outcome_var) == 1 & get(poi_var) == 0)),
         nVacCaseCom = with(complete.df, sum(get(outcome_var) == 1 &
-                                            get(poi_var) == 1&RISKGR1 == "At Risk")),
-        nUnvacCaseCom = with(complete.df, sum(get(outcome_var) == 0 &
                                               get(poi_var) == 1 & RISKGR1 == "At Risk")),
-        nVacCaseNoCom = with(complete.df, sum(get(outcome_var) == 1 &
-                                              get(poi_var) == 1&RISKGR1 == "Not At Risk")),
-        nUnvacCaseNoCom = with(complete.df, sum(get(outcome_var) == 0 &
+        nUnvacCaseCom = with(complete.df, sum(get(outcome_var) == 1 &
+                                                get(poi_var) == 0 & 
+                                                RISKGR1 == "At Risk")),
+        nVacCaseNoCom = with(complete.df, sum(get(outcome_var) == 1 & 
                                                 get(poi_var) == 1 &
+                                                RISKGR1 == "Not At Risk")),
+        nUnvacCaseNoCom = with(complete.df, sum(get(outcome_var) == 1 &
+                                                  get(poi_var) == 0 &
                                                   RISKGR1 == "Not At Risk")),
-        nVacNoncaseCom = with(complete.df, sum(get(outcome_var) == 1 &
-                                               get(poi_var) == 0 &
+        nVacNoncaseCom = with(complete.df, sum(get(outcome_var) == 0 &
+                                                 get(poi_var) == 1 &
                                                  RISKGR1 == "At Risk")),
         nUnvacNoncaseCom = with(complete.df, sum(get(outcome_var) == 0 &
-                                                 get(poi_var) == 0 &
+                                                   get(poi_var) == 0 &
                                                    RISKGR1 == "At Risk")),
-        nVacNoncaseNoCom = with(complete.df, sum(get(outcome_var) == 1 &
-                                                 get(poi_var) == 0 &
+        nVacNoncaseNoCom = with(complete.df, sum(get(outcome_var) == 0 &
+                                                   get(poi_var) == 1 &
                                                    RISKGR1 == "Not At Risk")),
         nUnvacNoncaseNoCom = with(complete.df, sum(get(outcome_var) == 0 &
-                                                   get(poi_var) == 0 &
+                                                     get(poi_var) == 0 &
                                                      RISKGR1 == "Not At Risk")),
-        nFemCom = with(complete.df, sum(FEMALE == 1&RISKGR1 == "At Risk")),
-        nMaleCom = with(complete.df, sum(FEMALE == 0&RISKGR1 == "At Risk")),
-        nFemNoCom = with(complete.df, sum(FEMALE == 1&RISKGR1 == "Not At Risk")),
-        nMaleNoCom = with(complete.df, sum(FEMALE == 0&RISKGR1 == "Not At Risk")),
-        VacObs = with(complete.df, sum(get(outcome_var) == 1))/with(df, sum(get(outcome_var) == 1)),
-        UnvacObs = with(complete.df, sum(get(outcome_var) == 0))/with(df, sum(get(outcome_var) == 0)),
+        nFemCom = with(complete.df, sum(FEMALE == 1 & RISKGR1 == "At Risk")),
+        nMaleCom = with(complete.df, sum(FEMALE == 0 & RISKGR1 == "At Risk")),
+        nFemNoCom = with(complete.df, sum(FEMALE == 1 & RISKGR1 == "Not At Risk")),
+        nMaleNoCom = with(complete.df, sum(FEMALE == 0 & RISKGR1 == "Not At Risk")),
+        VacObs = with(complete.df, sum(get(poi_var) == 1))/with(df, sum(get(poi_var) == 1)),
+        UnvacObs = with(complete.df, sum(get(poi_var) == 0))/with(df, sum(get(poi_var) == 0)),
         ComObs = with(complete.df, sum(RISKGR1 == "At Risk"))/with(df, sum(RISKGR1 == "At Risk")),
         NoComObs = with(complete.df, sum(RISKGR1 == "Not At Risk"))/with(df, sum(RISKGR1 == "Not At Risk")),
         FemObs = with(complete.df, sum(FEMALE == 1))/with(df, sum(FEMALE == 1)),
@@ -535,13 +538,13 @@ twoph_e_logit_func <- function(poi_var = "A", outcome_var = "Y",
 #### twoph_m_logit_func: Two-Phase Logistic Regression Approach w/ Model Variance ####
 
 ### Function inputs:
-# poi_var: string of exposure of interest variable name
+# poi_var: string of model's exposure variable name
 #  e.g., "A"
-# outcome_var: string of outcome variable name
+# outcome_var: string of model's outcome variable name
 #  e.g., "Y"
 # model_formula: string of desired logistic regression formula
 #  e.g., "Y ~ A + FEMALE + RISKGR1 + CALTIME"
-# missing_var: string of indicator of missing the exposure variable name
+# missing_var: string of indicator of observing the exposure variable name
 #  e.g., "D"
 # oracle_formula: optional string of true data-generating formula for 
 #  outcome variable (more relevant when no missing data). Included so user 
@@ -560,7 +563,7 @@ twoph_e_logit_func <- function(poi_var = "A", outcome_var = "Y",
 #  be accounted for using an offset.
 #  e.g., sim.df
 
-### twoph_e_logit_func outputs:
+### twoph_m_logit_func outputs:
 # list that contains information about the fitted pseudo-likelihood 
 # logistic regression and about df (collected as sanity checks 
 # in the simulations)
@@ -610,31 +613,31 @@ twoph_m_logit_func <- function(poi_var = "A", outcome_var = "Y",
         Reject = as.integer(pval < 0.05),
         nsamp = nrow(df),
         ncomplete = nrow(complete.df),
-        nVac = with(complete.df, sum(get(outcome_var) == 1)),
-        nCase = with(complete.df, sum(get(poi_var) == 1)),
+        nVac = with(complete.df, sum(get(poi_var) == 1)),
+        nCase = with(complete.df, sum(get(outcome_var) == 1)),
         nW = with(complete.df, sum(W == 1)),
         nC = with(complete.df, sum(C == 1)),
         nVacCase = with(complete.df, sum(get(outcome_var) == 1 & get(poi_var) == 1)),
-        nUnvacCase = with(complete.df, sum(get(outcome_var) == 0 & get(poi_var) == 1)),
+        nUnvacCase = with(complete.df, sum(get(outcome_var) == 1 & get(poi_var) == 0)),
         nVacCaseCom = with(complete.df, sum(get(outcome_var) == 1 &
                                               get(poi_var) == 1 & RISKGR1 == "At Risk")),
-        nUnvacCaseCom = with(complete.df, sum(get(outcome_var) == 0 &
-                                                get(poi_var) == 1 & 
+        nUnvacCaseCom = with(complete.df, sum(get(outcome_var) == 1 &
+                                                get(poi_var) == 0 & 
                                                 RISKGR1 == "At Risk")),
         nVacCaseNoCom = with(complete.df, sum(get(outcome_var) == 1 & 
                                                 get(poi_var) == 1 &
                                                 RISKGR1 == "Not At Risk")),
-        nUnvacCaseNoCom = with(complete.df, sum(get(outcome_var) == 0 &
-                                                  get(poi_var) == 1 &
+        nUnvacCaseNoCom = with(complete.df, sum(get(outcome_var) == 1 &
+                                                  get(poi_var) == 0 &
                                                   RISKGR1 == "Not At Risk")),
-        nVacNoncaseCom = with(complete.df, sum(get(outcome_var) == 1 &
-                                                 get(poi_var) == 0 &
+        nVacNoncaseCom = with(complete.df, sum(get(outcome_var) == 0 &
+                                                 get(poi_var) == 1 &
                                                  RISKGR1 == "At Risk")),
         nUnvacNoncaseCom = with(complete.df, sum(get(outcome_var) == 0 &
                                                    get(poi_var) == 0 &
                                                    RISKGR1 == "At Risk")),
-        nVacNoncaseNoCom = with(complete.df, sum(get(outcome_var) == 1 &
-                                                   get(poi_var) == 0 &
+        nVacNoncaseNoCom = with(complete.df, sum(get(outcome_var) == 0 &
+                                                   get(poi_var) == 1 &
                                                    RISKGR1 == "Not At Risk")),
         nUnvacNoncaseNoCom = with(complete.df, sum(get(outcome_var) == 0 &
                                                      get(poi_var) == 0 &
@@ -643,8 +646,8 @@ twoph_m_logit_func <- function(poi_var = "A", outcome_var = "Y",
         nMaleCom = with(complete.df, sum(FEMALE == 0 & RISKGR1 == "At Risk")),
         nFemNoCom = with(complete.df, sum(FEMALE == 1 & RISKGR1 == "Not At Risk")),
         nMaleNoCom = with(complete.df, sum(FEMALE == 0 & RISKGR1 == "Not At Risk")),
-        VacObs = with(complete.df, sum(get(outcome_var) == 1))/with(df, sum(get(outcome_var) == 1)),
-        UnvacObs = with(complete.df, sum(get(outcome_var) == 0))/with(df, sum(get(outcome_var) == 0)),
+        VacObs = with(complete.df, sum(get(poi_var) == 1))/with(df, sum(get(poi_var) == 1)),
+        UnvacObs = with(complete.df, sum(get(poi_var) == 0))/with(df, sum(get(poi_var) == 0)),
         ComObs = with(complete.df, sum(RISKGR1 == "At Risk"))/with(df, sum(RISKGR1 == "At Risk")),
         NoComObs = with(complete.df, sum(RISKGR1 == "Not At Risk"))/with(df, sum(RISKGR1 == "Not At Risk")),
         FemObs = with(complete.df, sum(FEMALE == 1))/with(df, sum(FEMALE == 1)),
@@ -660,14 +663,14 @@ twoph_m_logit_func <- function(poi_var = "A", outcome_var = "Y",
 # TMLE approach constructed from spglm function in causalglm package
 
 ### Function inputs:
-# poi_var: string of exposure of interest variable name
-#  e.g., "A"
-# outcome_var: string of outcome variable name
+# poi_var: string of model's exposure variable name
 #  e.g., "Y"
+# outcome_var: string of model's outcome variable name
+#  e.g., "A"
 # model_formula: string of desired logistic regression formula
 #  the function will modify the formula to match spglm formula requirements
-#  e.g., "Y ~ A + FEMALE + RISKGR1 + CALTIME"
-# missing_var: string of indicator of missing the exposure variable name
+#  e.g., "A ~ Y + FEMALE + RISKGR1 + CALTIME"
+# missing_var: string of indicator of observing the exposure variable name
 #  e.g., "D"
 # oracle_formula: optional string of true data-generating formula for 
 #  outcome variable (more relevant when no missing data). Included so user 
@@ -686,7 +689,7 @@ twoph_m_logit_func <- function(poi_var = "A", outcome_var = "Y",
 #  e.g., sim.df
 
 ### semilogit_func outputs:
-# list that contains information about the fitted pseudo-likelihood 
+# list that contains information about the fitted semiparametric 
 # logistic regression and about df (collected as sanity checks 
 # in the simulations)
 
