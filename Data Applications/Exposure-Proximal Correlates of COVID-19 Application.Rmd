@@ -1,0 +1,925 @@
+---
+title: "Code for 'Targeted Maximum Likelihood Estimation of Vaccine Effectiveness and Immune Correlates in Test-Negative Design Studies with Missing Data'"
+subtitle: "Application 2: Inference on Immune Markers as Exposure-Proximal Correlates of COVID-19"
+author: "Leah I. B. Andrews"
+date: "Last Updated: April 24, 2026"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyr)
+library(dplyr)
+library(survival)
+library(knitr)
+library(forestplot)
+library(gtsummary)
+library(ggplot2)
+library(osDesign)
+library(purrr)
+```
+
+This R markdown provides code to perform the analyses from 'Application 2: Inference on Immune Markers as Exposure-Proximal Correlates of COVID-19' in the manuscript "Targeted maximum likelihood estimation of vaccine effectiveness and immune correlates in test-negative design studies with missing data" by L.I.B. Andrews, L. van der Laan, and P. Gilbert. This manuscript introduces a targeted maximum likelihood estimation approach that can be used to study the association between immune markers present around the time of potential pathogen exposure and a clinical disease endpoint using test-negative design (TND) study. We demonstrate our approach on a two-phase TND immune correlates study cohort sampled from the Moderna Coronavirus Efficacy (COVE) phase 3 randomized placebo-controlled trial (RCT) (El Sahly et al. 2021).
+
+The COVE RCT data cannot be shared so instead, we generate a toy RCT dataset to illustrate how we conducted our data application in the manuscript. To obtain our phase one TND study cohort, we apply participant-based sampling with censoring for COVID-19 to the participants who obtained SARS-CoV-2 testing and met the symptom definition during the RCT (De Serres et al. 2013; Andrews et al. 2025). To select the participants that should have their immune markers measured, we sample without replacement to attain a 1:3 case-noncase ratio within each stratum defined by geographic region. To obtain the phase two TND study cohort, we exclude participants from the sampled subset who do not have their immune markers successfully measured or have indications of an anamnestic response from SARS-CoV-2 infection. Using the TND study cohort, we calculate our targeted maximum likelihood estimator (TMLE), a pseudo-likelihood logistic regression estimator, and an ordinary logistic regression estimator of the causal conditional risk ratio of COVID-19 when comparing vaccinated healthcare-seeking SARS-CoV-2 naïve individuals with the same characteristics who have immune marker levels greater than or equal to vs. below a given threshold. 
+ 
+
+
+# Generating Data
+Since we cannot share the COVE data, we generate a toy phase 3 COVID-19 RCT cohort and identify participants who would have been eligible for a TND immune correlates study from this RCT cohort. This data-generating code has been adapted from `Evaluation of TND with RCTs.Rmd`, which provides code for the Andrews et al. 2025 article, "Evaluating the Test-Negative Design for COVID-19 Vaccine Effectiveness Using Randomized Trial Data: A Secondary Cross-Protocol Analysis of 5 Randomized Clinical Trials" (https://github.com/leahandrews/eval-tnd-w-rcts). Data-generating code for the phase one TND cohort also closely follows `COVID-19 Vaccine Effectiveness Application.rmd`, which provides code for 'Application 1: Inference on COVID-19 Vaccine Effectiveness' in our TMLE manuscript (https://github.com/leahandrews/semiparametric-tmle-tnd).
+
+## RCT Cohort
+Our toy RCT dataset consists of 30,000 SARS-CoV-2 naïve participants who were randomly assigned to receive one dose of the COVID-19 vaccine or placebo at a 1:1 ratio within three randomization strata. The blinded phase of the RCT takes place from August 1, 2020 to March 31, 2021. For simplicity, all participants were vaccinated in the first two weeks of August and no participants were unblinded early or lost to follow-up. At RCT enrollment, age, United States (US) Census region, presence of any comorbidities, and risk score of acquiring COVID-19 were measured for all participants. There are no missing data on any covariates.
+```{r}
+## Demographic and Clinical Characteristics for RCT Cohort
+# One Row per Participant
+set.seed(7)
+nsubj <- 30000
+
+demo.df00 <- data.frame(USUBJID = paste0("ID", 1:nsubj),
+                        
+               AGE = round(runif(nsubj, min = 18, max = 80)),
+               
+               # US Census Regions
+               REGION = sample(c("Midwest", "NE", "South", "West"), nsubj, 
+                               replace = TRUE, prob = c(2/10, 1/10, 5/10, 2/10)),
+              
+               # Presence of Comorbidities
+               COMORB = sample(c("Comorbidities", "None"), nsubj, 
+                               replace = TRUE, prob = c(1/4, 3/4)),
+              
+               # Risk Score of Acquiring COVID-19
+               risk_score = rnorm(nsubj, mean = -3, sd = 0.5),
+               
+               # Intervention Date (Placebo or Vaccine)
+               DOSEDT = sample(seq(as.Date('2020/08/01'), 
+                                   as.Date('2020/08/14'), by="day"),
+                              nsubj, replace = TRUE),
+              
+               # End of Blinded Phase Date
+               ENDDT = as.Date('2021/03/31')) %>% mutate(
+                
+                # Randomization Strata
+                STRATA = case_when(
+                  AGE < 65 & COMORB == "Comorbidities" ~ "< 65 and Comorb",
+                  AGE < 65 & COMORB == "None" ~ "< 65 and No Comorb",
+                  AGE >= 65  ~ ">= 65")
+              )
+
+demo.df0 <- demo.df00 %>% group_by(STRATA) %>% 
+  mutate(#1:1 Vaccine vs. Placebo by Randomization Strata
+        VACCINE = sample(rep(0:1, length.out = n()))) %>% ungroup()
+```
+
+During the RCT, participants may experience an illness episode or symptomatic period that prompts them to obtain SARS-CoV-2 testing. At the time of the first symptom-triggered SARS-CoV-2 test, participants also have their blood drawn and stored for later immunological assessment. In this dataset, participants can experience 0-5 illness episodes during the study and the date of any symptom onset (```ONSETDT```) and first date of meeting the COVID-19 symptom definition (```SYMDT```) are documented. By definition, the date of meeting the symptom definition must occur on or after date of symptom onset. Illness episodes may be truly caused by SARS-CoV-2 or by a non-SARS-CoV-2 illness (e.g., other respiratory pathogens, allergies). By construction, the COVID-19 vaccine protects against COVID-19 (vaccine efficacy = 80\%) and does not affect other causes of COVID-19-like symptoms.
+
+Participants obtain 1-10 SARS-CoV-2 diagnostic tests before and/or during an illness episode. While an illness episode may be truly caused by SARS-CoV-2 (```eps_sars_inf=1```), our SARS-CoV-2 test results (```POSTEST```) are subject to misclassification (100\% specificity, 85\% sensitivity). Thus, the unobserved true SARS-CoV-2 infection status of an illness episode, ```eps_sars_inf```, does not always match the observed SARS-CoV-2 test results from an illness episode, ```POSTEST```.
+
+```{r}
+## Adding Illness Episode Information
+demo.df <- demo.df0 %>% mutate(
+     # True SARS-CoV-2 Infection Status at Any Point during Blinded Phase 
+     # (Unknown in Observed Clinical Data)
+     # Vaccine Protects Against SARS-CoV-2 Infection
+      any_sars_inf = rbinom(nrow(.), 1, exp( log(0.04) + log(0.2)*VACCINE) ),
+      
+      # Number of COVID-19 Illness Episodes
+      n_sars_eps = any_sars_inf*sample(1:2, nsubj, replace = TRUE, prob = c(0.95, 0.05)),
+      
+      # Number of Non-COVID-19 Illness Episodes
+      n_nonsars_eps = sample(0:3, nsubj, replace = TRUE, prob = c(0.9, 0.07, 0.02, 0.01)))
+
+
+## Illness Episode Characteristics
+# Creating One Row Per Illness Episode
+
+# COVID-19 Illness Episodes
+sars.eps.df0 <- uncount(demo.df , n_sars_eps) %>% 
+  # Illness Episode SARS-CoV-2 Infection Status
+  mutate(eps_sars_inf = 1) %>% select(-n_nonsars_eps)
+
+# Non-COVID-19 Illness Episodes
+non.sars.eps.df0 <- uncount(demo.df , n_nonsars_eps) %>% 
+  # Illness Episode SARS-CoV-2 Infection Status
+  mutate(eps_sars_inf = 0) %>% select(-n_sars_eps)
+
+# Adding Testing and Symptom Information for Both Types of Illness Episodes
+eps.df00 <- rbind(sars.eps.df0, non.sars.eps.df0) %>% arrange(USUBJID)
+eps.df0 <- eps.df00   %>% mutate(
+              # Number of SARS-CoV-2 Tests within an Illness Episode
+              ntests = sample(1:10, nrow(.), replace = TRUE),
+              
+              # Date of Symptom Onset Beginning of Illness Episode)
+              ONSETDT = sample(seq(as.Date('2020/09/01'), as.Date('2021/03/31'), 
+                              by="day"), nrow(.), replace = TRUE),
+              
+              # Date of Meeting the COVID-19 Symptom Definition
+              # For Simplicity, All Our Illness Episodes Meet the 
+              # Symptom Definition But This May Not be True in Other Datasets
+              SYMDT = ONSETDT + sample(0:5, n(), replace = TRUE))%>% 
+                arrange(USUBJID, ONSETDT) 
+
+eps.df <- eps.df0 %>% group_by(USUBJID) %>% arrange(ONSETDT) %>%
+  # Label Illness Episodes in Chronological Order
+  mutate(EPISODE = 1:n()) %>% arrange(USUBJID)
+
+
+## Testing Characteristics 
+# Creating One Row per SARS-CoV-2 Test Result
+test.df0 <- uncount(eps.df, ntests)
+test.df <- test.df0 %>% group_by(USUBJID)%>% mutate(
+  # Test Date 
+  TESTDT = ONSETDT + sample(-3:15, n(), replace = TRUE),
+  # Test Result Roughly Based on SARS-CoV-2 PCR Sensitivity and Specificity
+  # 1 = positive, 0 = negative
+  POSTEST = eps_sars_inf*rbinom(n(), 1, 0.85)) %>% 
+  # Only Include Tests while Blinded 
+  filter(TESTDT <= as.Date('2021/03/31'))
+```
+We use the demographic and testing data to identify RCT COVID-19 cases (```RCTCASE=1```), or participants who meet the COVID-19 symptom definition and obtain a SARS-CoV-2 positive test at least 14 days after vaccination. For this RCT, these criteria can be met in either order as long as both dates are within 15 days apart. The remaining RCT participants were right-censored at the end of the blinded phase. 
+
+```{r}
+## Creating RCT Analysis Dataset
+
+# Identify First SARS-CoV-2 Positive Test from RCT COVID-19 Cases 
+# (In this Example Dataset, All Illness Episodes Met the Symptom Definition)
+rct.case.df <- test.df %>% 
+  # Only take those who test SARS-CoV-2 Positive
+  filter(POSTEST == 1) %>% group_by(USUBJID)%>%
+  slice_min(TESTDT, with_ties = FALSE)
+
+# Adding COVID-19 Cases' Testing Information to Demographic Information
+rct.df0<- left_join(demo.df, rct.case.df[c("USUBJID", "SYMDT", "TESTDT", "POSTEST")])
+rct.df <- rct.df0 %>% rowwise() %>% mutate(
+  # Endpoint Date: Unblinding Date or 
+  # Earliest Date of Meeting Symptom Definition and Positive Test
+  RCTADT = if_else(is.na(POSTEST), ENDDT, min(SYMDT, TESTDT))) %>% 
+  ungroup() %>% mutate(
+  # RCT COVID-19 Case Status
+  RCTCASE= ifelse(is.na(POSTEST), 0, 1),
+  # Time to COVID-19 or Censoring
+  RCTTT = as.numeric(RCTADT - (DOSEDT + 14) + 1)) 
+
+# RCT Cases
+rct_case_ids<- subset(rct.df, RCTCASE == 1)$USUBJID
+
+with(rct.df, table(VACCINE, RCTCASE))
+```
+From the RCT cohort of 30,000 participants, `r length(rct_case_ids)` participants were COVID-19 cases. 
+
+
+## Two Phase TND Immune Correlates Study
+
+### Phase One TND Study Cohort
+To create our phase one TND study cohort from the RCT data, we retain participants who received the vaccine and obtained eligible SARS-CoV-2 tests, which must occur at least 14 days after vaccination, within ten days after symptom onset, after meeting the symptom definition, and while blinded. We restrict to participants who received the vaccine because our study population consists of individuals who are naïve to SARS-CoV-2 and would not have been able to generate an immune response to SARS-CoV-2 at potential exposure. Additionally, while our application in the manuscript restricted to participants who obtained SARS-CoV-2 testing within ten days of symptom onset, TND immune correlate studies analyzing neutralizing and/or binding antibody levels may consider restricting SARS-CoV-2 tests within five or seven days after symptom onset to reduce the chance of measuring immune marker levels that have been perturbed from recent SARS-CoV-2 infection in TND cases (Sumner et al. 2024; Painter et al. 2023).
+
+In the TND analysis, we define illness episodes as symptomatic periods that last from symptom onset to at least 15 days after symptom onset and are separated by eligible SARS-CoV-2 tests that occur at least 30 days apart. We propose distinguishing illness episodes by eligible SARS-CoV-2 test dates rather than dates of symptom onset and resolution because symptom dates would be more difficult to recall and collect in a TND study. Since the illness episode variable ```EPISODE``` is defined differently in the RCT, we apply a stricter criteria to the existing RCT illness episode ```EPISODE``` variable. We define a positive episode as an illness episode that triggers at least one eligible SARS-CoV-2 positive test and a negative episode as an illness episode that does not trigger any SARS-CoV-2 positive tests and only triggers eligible SARS-CoV-2 negative tests.
+
+```{r}
+# Only Retain TND Eligible Tests from Vaccinated Individuals
+tnd.test.df <- test.df %>% filter( # Received Vaccine
+                                    VACCINE == 1 &
+                                    # Test At Least 14 Days After Vaccination
+                                    TESTDT >= (DOSEDT+14) & 
+                                      
+                                    # Test within 10 Days After Symptom Onset
+                                    TESTDT >= ONSETDT &
+                                    TESTDT <= (ONSETDT +10) &
+                                      
+                                    # Test After Meeting the Symptom Definition
+                                    TESTDT >= SYMDT &
+                                      
+                                    # Test While Blinded
+                                    TESTDT <= ENDDT) %>% 
+                mutate(
+                  # Quantitative Calendar Time from Sept 1, 2020 Reference Date
+                  # (for TMLE Approach)
+                  CALTIME  = as.numeric(TESTDT - as.Date("2020-09-01")))
+
+# Function that Identifies Tests That are at Least 30 days from Each Other
+# Must be Applied to Data Grouped by Participant ID and Sorted by Testing Date 
+# Inputs: 
+#      col_vals: Values from a Date or Numeric Column
+# Outputs: Boolean Vector, TRUE meaning rows are at least 30 days apart
+#      First Value will Always be True
+# 
+over30_func <- function(col_vals){
+  # MUST BE USED AFTER GROUPED BY USUBJID AND SORTED BY DATE
+
+  # Starts with TRUE Because Have to Keep First Test
+  empty_vec <- c(TRUE)
+  nobs <- length(col_vals)
+  if(nobs > 1){
+    for(i in 1:(nobs - 1)){
+      # Are Two Tests at Least 30 Days Apart?
+      val <- col_vals[i + 1] - col_vals[i] >= 30
+      empty_vec <- c(empty_vec, val)
+    }
+  }
+  empty_vec
+}
+
+# Take One Test per RCT-Defined Illness Episode 
+# (Earliest Negative Test if All Negative Tests, or Earliest Positive Test)
+spec.df0  <- tnd.test.df %>% group_by(USUBJID, EPISODE)%>% 
+  arrange(USUBJID, TESTDT) %>% slice(which.max(POSTEST))
+
+# Only Retain Illness Episodes That Are at Least 30 Days Apart
+spec.df01 <- spec.df0 %>% group_by(USUBJID) %>% 
+  arrange(TESTDT)%>% mutate(SEPILL = over30_func(TESTDT))
+spec.df02 <- spec.df01 %>% filter(SEPILL==TRUE)
+
+# Only Retain Earliest Positive Episode
+spec.df <- spec.df02[!(duplicated(spec.df02[c("USUBJID", "POSTEST")]) &
+                                       spec.df02$POSTEST==1), ]
+```
+
+To obtain our phase one TND study cohort, we apply participant-based sampling with censoring for COVID-19. Under this TND sampling method, cases are participants with at least one positive episode and contribute their earliest eligible SARS-CoV-2 positive test from their first positive episode. Noncases are participants with no positive episodes and only negative episodes and contribute their earliest eligible SARS-CoV-2 negative test from their first negative episode. 
+
+```{r}
+## Constructing Phase One TND Study Cohort 
+
+# Participant-Based Sampling with Censoring
+phase1.df0  <- spec.df %>% group_by(USUBJID) %>% arrange(USUBJID, TESTDT) %>%
+  slice(which.max(POSTEST))
+
+# Tertiles in Phase 1 TND Participants
+caltimetert1 <- quantile(phase1.df0$CALTIME, probs = c(0, 1/3, 2/3, 1))
+
+phase1.df <- phase1.df0 %>% 
+  mutate(# Calendar Time in Phase One Tertiles
+         # (to Account for Smaller Cells in Standard TND Analyses)
+         CALTIMEp1 = cut(CALTIME, caltimetert1, include.lowest = TRUE),
+
+         # Two Week Calendar Time 
+         # (Many TND Analyses Adjust for Categorical Calendar Time)
+         TWOWEEK = cut(TESTDT, "2 weeks"),
+         
+         ## Phase Two Variables (to be Updated)
+         
+         # Indicator if Selected to Have Immune Markers Measured
+         DImm = 0,
+         
+         # Indicator if Participants Selected to Have Immune Markers 
+         # Measured are Missing Immune Markers
+         missmarker = NA,
+  
+        # Immune Marker Level
+        marker = NA,
+  
+        # Indicator if Case is Anti-N Seropositive
+        nseropos = NA,
+        
+        # Indicator if in Phase Two TND Study Cohort
+        D = 0)
+
+with(phase1.df, table(VACCINE, POSTEST))
+```
+Our phase one TND study cohort has `r nrow(phase1.df)` participants and `r nrow(subset(phase1.df , POSTEST==1))` cases.
+
+### Phase Two TND Study Cohort
+Now that we've identified the RCT participants who would have been eligible for a TND immune correlates study (i.e., phase one TND study cohort), must select a subset of participants to measure immune markers from their stored specimen. We plan to measure immune markers from all cases and a subset of noncases sampled without replacement from the phase one TND cohort to attain a 1:3 case-noncase ratio within each stratum defined by US geographic region (Midwest, Northeast, South, and West).
+
+The phase two TND study cohort may be smaller than the selected subset because we exclude participants in the selected subset whose immune markers were not successfully measured (for reasons other than two-phase sampling design) or who were anti-nucleocapsid seropositive, which may indicate that their immune marker levels have been affected by an anamnestic response from SARS-CoV-2 infection (Follmann et al. 2025).
+
+```{r}
+## Selecting Participants to Measure Immune Markers
+# All Cases and Three Times as Many Noncases in Each Region Stratum
+
+# Number of Cases in Each Region Stratum
+nregioncases <- with(phase1.df, table(REGION, POSTEST))
+
+# Midwest
+noncase_mw_ids <- subset(phase1.df, POSTEST == 0 & REGION == "Midwest")$USUBJID
+marker_noncase_mw_ids<- sample(noncase_mw_ids, 
+                            nregioncases["Midwest", "1"] * 3, 
+                            replace = FALSE)
+
+# NE
+noncase_ne_ids <- subset(phase1.df, POSTEST == 0 & REGION == "NE")$USUBJID
+marker_noncase_ne_ids<- sample(noncase_ne_ids,
+                            nregioncases["NE", "1"] * 3, 
+                            replace = FALSE)
+
+# South
+noncase_s_ids <- subset(phase1.df, POSTEST == 0 & REGION == "South")$USUBJID
+marker_noncase_s_ids<- sample(noncase_s_ids, 
+                            nregioncases["South", "1"] * 3, 
+                            replace = FALSE)
+
+# West
+noncase_w_ids <- subset(phase1.df, POSTEST == 0 & REGION == "West")$USUBJID
+marker_noncase_w_ids<- sample(noncase_w_ids, 
+                            nregioncases["West", "1"] * 3, 
+                            replace = FALSE)
+
+## Participants who were Selected for Phase Two TND Study Cohort
+phase1.df <- phase1.df %>% mutate(
+  
+  # Identifying Participants who were Selected to have Immune Markers Measured
+  DImm = ifelse(POSTEST == 1 , 1, DImm),
+  DImm = ifelse(USUBJID %in% c(marker_noncase_mw_ids, 
+                               marker_noncase_ne_ids,
+                               marker_noncase_s_ids, 
+                               marker_noncase_w_ids), 1, DImm),
+  
+  # Indicator if Participants Selected to Have Immune Markers 
+  # Measured are Missing Immune Markers (e.g., Assay Issues, Specimen not Stored Properly)
+  missmarker = ifelse(DImm == 1, sample(0:1, 1, prob = c(0.99, 0.01)), missmarker),
+  
+  # Immune Marker Level is Lower for Cases
+  marker = ifelse(missmarker == 0 , rexp(1, rate = 1/(200 - 100*POSTEST)), NA),
+  
+  # Indicator if Case is Anti-N Seropositive
+  nseropos = ifelse(DImm ==1, 
+                    ifelse( POSTEST == 1, 
+                            sample(0:1, 1, prob = c(0.98, 0.02)), 0), 
+                    nseropos),
+  
+  # D for Delta in Manuscript (i.e., Phase Two TND Study Cohort)
+  # Removing Those who are Anti-Nucleocapsid Seropositive or 
+  # Missing Immune Markers (Not from Two-Phase Sampling)
+  D = ifelse(DImm == 1 & nseropos == 0 & missmarker == 0, 1, D)
+)
+
+phase2.df <- phase1.df %>% filter(D == 1)
+
+
+# Table of Cases and Noncases in Phase Two TND Study Cohort by Region Stratum
+with(phase2.df, table(REGION, POSTEST))
+```
+
+```{r fig.width = 5, fig.height = 3, fig.align='center'}
+phase2.df %>% ggplot( aes(log(marker, 10), fill = factor(POSTEST))) + 
+    geom_histogram( bins = 100)+ theme_bw() + ylim(0, 17) + 
+    labs(y = "Number of Participants", x = "Immune Marker Levels",
+         fill = "COVID-19 Case Status", 
+         title = "Two Phase TND Study Cohort Immune Markers") +
+    scale_fill_manual(labels = c("Noncase", "Case"),
+                      values = c("0" = "#1E88E5", "1" = "#D81B60"),
+                      guide = guide_legend(reverse = TRUE))+
+    scale_x_continuous(limits = c(-1, 4), breaks = -2:4,
+                       labels = parse(text = paste0("10^", -2:4)))+ 
+    theme(axis.title.x = element_text( size = 12),
+          axis.title.y = element_text(size = 12),
+          axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 12),
+          legend.title = element_text(size = 12),
+          legend.text = element_text(size = 12),
+          legend.position = "bottom") 
+```
+
+Currently, our TMLE approach is restricted to accommodating binary exposure variables. Thus, we investigate immune marker levels dichotomized by a threshold to study if some thresholds are associated with a greater demarcation in COVID-19 risk. We assessed thresholds (greater than or equal to vs. below) defined from the 20th, 30th, 40th, 50th, 60th, 70th, and 80th percentile for the immune marker of interest. 
+```{r}
+# Quantiles based on people in phase 2 TND cohort
+marker_quant<- quantile(phase2.df$marker, 
+                      probs = seq(0, 1, by = .1))
+
+round(marker_quant[3:9])
+
+phase2.df <- phase2.df %>% mutate(
+  # Immune Marker Levels
+  MARKERlog10 = log(marker, 10),
+  MARKERQ = cut(marker, marker_quant, include.lowest = TRUE),
+  MARKER20 = ifelse(marker >= marker_quant["20%"], 1, 0),
+  MARKER30 = ifelse(marker >= marker_quant["30%"], 1, 0),
+  MARKER40 = ifelse(marker >= marker_quant["40%"], 1, 0),
+  MARKER50 = ifelse(marker >= marker_quant["50%"], 1, 0),
+  MARKER60 = ifelse(marker >= marker_quant["60%"], 1, 0),
+  MARKER70 = ifelse(marker >= marker_quant["70%"], 1, 0),
+  MARKER80 = ifelse(marker >= marker_quant["80%"], 1, 0),
+  
+  
+  # Standardize standard_risk_score by Phase 2 Mean and SD
+  risk_score_s = (risk_score - mean(phase2.df$risk_score))/
+    sd(phase2.df$risk_score),
+  
+  # Standardize CALTIMEDD by Phase 2 Mean and SD
+  CALTIMEs = (CALTIME - mean(phase2.df$CALTIME))/
+    sd(phase2.df$CALTIME))
+
+# Adding Phase 2 Covariates to the Phase 1 Dataset
+phase1.df <- left_join(phase1.df, phase2.df)
+```
+
+# Statistical Analyses
+In this next section, we estimate the causal conditional risk ratios of COVID-19 in a SARS-CoV-2 naive healthcare-seeking population that has been vaccinated within six months using three statistical methods in the TND study cohort.
+
+## TND COVID-19 Causal Conditional Risk Ratio Using Targeted Maximum Likelihood Estimation Under Semiparametric Logistic Regression Model
+
+We calculate a TMLE of the TND sample conditional odds ratio of COVID-19 using a partially linear logistic regression model. We use the ```causalglm``` R package developed by Lars van der Laan (https://tlverse.org/causalglm/), which implements semiparametric and nonparametric generalized linear models using targeted maximum likelihood estimation to conduct causal inference on heterogeneous treatment effects. The package relies on ```tlverse/tmle3``` for targeted maximum likelihood estimation and ```tlverse/sl3``` and ```tlverse/hal9001``` for machine-learning. The package is in active development so please contact Lars van der Laan if there are any issues or concerns (lvdlaan@uw.edu). Make sure to load the most up-to-date version of these packages from Github.
+```{r eval=FALSE}
+#  Install devtools CRAN package
+if(!require(devtools)) {
+  install.packages(devtools)
+}
+
+# Install Github Packages
+devtools::install_github("tlverse/causalglm")
+devtools::install_github("tlverse/hal9001@master")
+devtools::install_github("tlverse/tmle3@general_submodels_devel")
+devtools::install_github("tlverse/sl3@Larsvanderlaan-formula_fix")
+```
+
+```{r include=FALSE}
+library(causalglm)
+```
+
+Since our TND immune correlates study cohort restricts to vaccinated RCT individuals, our study is subject to confounding. Thus, in our partially linear logistic regression model, we adjust for the risk score of acquiring COVID-19 (standardized), presence of comorbidities, US Census region, and quantitative calendar time of SARS-CoV-2 testing (standardized). 
+
+For estimation, we use a 10-fold cross-fitted ensemble super learner that considers a library of learners including the sample mean, logistic regression models, general additive models, multivariate adaptive regression splines, lasso regression, and ridge regression (van der Laan, Polley, and Hubbard 2007; Chernozhukov et al. 2018). The library also includes screened logistic regression and general additive model learners, which only include covariates with nonzero coefficients based on lasso regression. We assess the candidate learners using a binomial log-likelihood loss and 10-fold cross-validation and combine the nuisance function predictions using non-negative least squares regression.
+
+```{r}
+## Ensemble Super Learner
+
+# Define Learners without Screens
+mean_lrn <- Lrnr_mean$new()
+glm_lrn <- Lrnr_glm$new(family = binomial())
+glm_intx <- Lrnr_glm$new(formula = ~ (.)^2, family = binomial())
+gam_lrn <- Lrnr_gam$new( family= binomial())
+mars_lrn <- Lrnr_earth$new()
+lasso_lrn <- Lrnr_glmnet$new(alpha = 1, family = "binomial")
+ridge_lrn <- Lrnr_glmnet$new(alpha = 0, family = "binomial")
+
+# Define Learners with Lasso Screen
+lasso_screen <- Lrnr_screener_coefs$new(learner = 
+                Lrnr_glmnet$new(alpha = 1, family = "binomial"), threshold = 0)
+glm_lasso <- Pipeline$new(lasso_screen, glm_lrn)
+glm_intx_lasso <- Pipeline$new(lasso_screen, glm_intx)
+gam_lasso <- Pipeline$new(lasso_screen, gam_lrn)
+
+# Stack Learners
+marker_stack <- Stack$new(
+  mean_lrn,
+  glm_lrn,
+  glm_intx,
+  gam_lrn,
+  mars_lrn,
+  lasso_lrn,
+  ridge_lrn,
+  glm_lasso,
+  glm_intx_lasso,
+  gam_lasso)
+
+# SuperLearner
+marker_sl <- Lrnr_sl$new(
+  learners = marker_stack,
+  metalearner = Lrnr_nnls$new(),
+  loss_function = loss_loglik_binomial)
+```
+
+To run our TMLE approach for the 20th quantile, we apply the ```spglm``` function in ```causalglm```, which currently requires all variables in the input dataset to be numerics. We use ```model.matrix``` to convert all character and factor variables into numeric or indicator variables.
+
+```{r}
+# Convert Data to Only Contain Numeric/Indicator Variables (spglm Requirement)
+# Use model.matrix to Convert Character/Factor Variables for Each TND Sample
+semi.model.20.df <- as.data.frame(model.matrix(~ MARKER20 +
+                          POSTEST +  REGION + risk_score_s +
+                            COMORB + CALTIMEs, data = phase2.df))
+
+# Run TMLE Approach with Super Learner for Estimation
+set.seed(2025)
+semi.mod.20 <- spglm( ~1, semi.model.20.df,
+                  W = setdiff(names(semi.model.20.df),
+                              c("(Intercept)", "MARKER20", "POSTEST")), 
+                  A = "POSTEST", Y = "MARKER20",
+                  estimand = "OR",
+                  sl3_Learner_Y = marker_sl,
+                  sl3_Learner_A = marker_sl)
+
+# Model Output
+print(semi.mod.20)
+
+# Example Output
+summary(semi.mod.20)
+```
+Our TMLE approach takes less than a minute using our library of learners. Applying ```print``` to an ```spglm``` object reports the object and equation. ```summary``` of an ```spglm``` object reports summary statistics for the sample log conditional odds ratio of immune marker threshold by case status, adjusting for covariates. ```tmle_est``` is the log conditional odds ratio and ```psi_exp``` is the conditional odds ratio. ```lower_exp``` and ```upper_exp``` are the exponentiated lower and upper bounds of the log conditional odds ratio 95\% confidence interval.
+
+
+```{r echo = FALSE}
+# Risk Ratio
+semi.rr <- format(round(coef(semi.mod.20)$psi_exp, 2), nsmall = 2)
+semi.rrCIlow <- format(round(coef(semi.mod.20)$lower_exp, 2), nsmall = 2)
+semi.rrCIhigh <- format(round(coef(semi.mod.20)$upper_exp, 2), nsmall = 2)
+
+# Percent Lower Risk
+semi.perc <- round(1-coef(semi.mod.20)$psi_exp, 2)*100
+semi.percCIlow <- round(1-coef(semi.mod.20)$upper_exp, 2)*100
+semi.percCIhigh <- round(1-coef(semi.mod.20)$lower_exp, 2)*100
+```
+
+Assuming the eleven identifying assumptions specified in our manuscript hold, we can interpret the TND sample conditional odds ratio as the causal conditional risk ratio of COVID-19 comparing vaccinated SARS-CoV-2 naïve healthcare-seeking  individuals with immune marker levels greater than or equal to the twentieth quantile (```r round(marker_quant["20%"])``` units) to those with immune markers lower than the twentieth quantile, holding risk score of acquiring COVID-19, comorbidities, region, and calendar date constant (RR = `r semi.rr`; 95\% CI: `r semi.rrCIlow`, `r semi.rrCIhigh`). Using our targeted maximum likelihood estimation approach, we estimate that vaccinated SARS-CoV-2 naïve healthcare-seeking individuals with immune markers higher than ```r round(marker_quant["20%"])``` units have `r semi.perc`\% lower risk of COVID-19 than those with immune markers lower than that threshold, given they share the same covariates. 
+
+Since we are interested in evaluating seven immune marker thresholds and want to visualize the results using ```forestplot```, we create ```semilogit_sl_tbl``` so we can easily run the function in a loop and output all the desired information to create a forest plot.
+
+```{r}
+### semilogit_sl_tbl: TMLE Approach under Semiparametric Logistic Regression Model
+# with Estimation Using User-Specified Learners. Approach constructed from
+# spglm function in causalglm package. Outputs list of model values.
+
+## Function inputs:
+# poi_var: string of model's exposure variable name
+#  e.g., "POSTEST"
+# outcome_var: string of model's outcome variable name
+#  e.g., "MARKER20"
+# model_formula: string of desired logistic regression formula
+#  (the function will modify the formula to match spglm formula requirements)
+#  e.g., "MARKER20 ~ POSTEST + REGION + COMORB + CALTIMEs + risk_score_s"
+# missing_var: string of indicator of observing the exposure variable name
+#  e.g., "D"
+# learner_name: string of learner name to be included in outputted table
+#  e.g., "Super Learner"
+# learner: sl3 Learner object to use for estimation
+# df: dataset with complete information on missing_var and all variables in model_formula
+#  except poi_var (function excludes participants missing poi_var for analyses)
+#  e.g., phase1.df or phase2.df
+
+## Function outputs:
+# Data.Frame with df Information and Model Coefficients
+semilogit_sl_tbl <- function(poi_var, outcome_var, model_formula,
+                              missing_var = "D", learner_name,
+                              learner, df){
+    
+    # Keep Individuals with Observed Exposure Variable (Delta=1)
+    complete.df <- df %>% filter(get(missing_var) == 1)
+    
+    # Table of Model's Outcome Variable and Exposure Variable
+    tbl <- addmargins(table(complete.df[[outcome_var]],
+                            complete.df[[poi_var]]))
+    proptbl <- round(prop.table(table(complete.df[[outcome_var]], 
+                           complete.df[[poi_var]]), 2)*100, 0)
+    tblcounts <- paste0(tbl[2,1:2], "/", tbl[3,1:2], " (", proptbl[2,], ")")
+
+  
+  ## Run Partially Linear Logistic Regression Model
+  # To get data in right format, create dataset with only numeric and 
+  # binary variables with model matrix including outcome
+  model_formula <- gsub(paste0(outcome_var, " *~"),
+                        paste0("~",outcome_var, "+"),
+                        model_formula)
+  
+  model.df <- as.data.frame(model.matrix(eval(parse(text = model_formula)), 
+                                         data = complete.df))
+  
+  mod <- spglm( ~1, model.df,
+                W = setdiff(names(model.df), c("(Intercept)", outcome_var, poi_var)), 
+                A = poi_var, Y = outcome_var,
+                estimand = "OR",
+                sl3_Learner_Y = learner,
+                sl3_Learner_A = learner)
+  
+  
+  ## Calculate relevant statistics
+  return(data.frame(StatMethod = learner_name, 
+                    Characteristic = outcome_var,
+                    nPhase2 = nrow(complete.df),
+                    Cases = tblcounts[2],
+                    Noncases = tblcounts[1],
+                    LowCases = sum(complete.df[[poi_var]] == 1 & 
+                                     complete.df[[outcome_var]] == 0),
+                    HighCases = sum(complete.df[[poi_var]] == 1 & 
+                                      complete.df[[outcome_var]] == 1),
+                    logRR = format(round(coef(mod)$tmle_est, 2), nsmall = 2),
+                    logRRCIlow = format( round( coef(mod)$lower, 2), nsmall = 2),
+                    logRRCIhigh = format( round( coef(mod)$upper, 2), nsmall = 2),
+                    RRCI = paste0(format(round(coef(mod)$psi_exp, 2), nsmall = 2), " (", 
+                                  format(round(coef(mod)$lower_exp, 2), nsmall = 2), ", ", 
+                                  format(round(coef(mod)$upper_exp, 2), nsmall = 2), ")"),
+                    PVal = format( round(coef(mod)$p_value, 3), nsmall = 3),
+                    Form = model_formula,
+                    stringsAsFactors = FALSE)) }
+```
+
+```{r}
+# Estimate TMLE for 20th to 80th Immune Marker Quantiles
+marker_vars <- paste0("MARKER", seq(20,80, by = 10))
+semi.list <- vector(mode = "list", length = length(marker_vars))
+set.seed(2025)
+
+for(i in 1:length(marker_vars)){
+  
+  semi.list [[i]] <- semilogit_sl_tbl(
+                        poi_var = "POSTEST",
+                        outcome_var = marker_vars[i],
+                        model_formula = paste0(marker_vars[i], 
+                         " ~ POSTEST + REGION + CALTIMEs + COMORB + risk_score_s"), 
+                        missing_var = "D",
+                        learner_name = "Super Learner",
+                        learner = marker_sl,
+                        phase1.df)
+}
+
+# Dataset of TMLE Results for Each Quantile
+semi.tbl0 <- do.call(rbind, semi.list)
+```
+
+We run ```semilogit_sl_tbl``` to obtain the TMLEs of the causal conditional risk ratios of COVID-19 by the 20th, 30th, 40th, 50th, 60th, 70th, and 80th immune marker quantiles. 
+
+
+## TND COVID-19 Causal Conditional Risk Ratio Using Pseudo-Likelihood Logistic Regression
+To account for the two-phase sampling design, we estimate the TND sample conditional odds ratio of COVID-19 (which can be interpreted as a causal conditional risk ratio under the assumptions listed in the manuscript) using a pseudo-likelihood logistic regression with empirical variance estimates (Breslow and Cain 1988; Breslow and Holubkov 1997). We adjust for risk score of acquiring COVID-19, presence of comorbidities, US Census region, and tertile calendar time of SARS-CoV-2 testing and account for the strata used in the two-phase sampling design. We use the ```tps``` function in the ```osDesign``` R package to implement the pseudo-likelihood logistic regression (Haneuse, Saegusa, and Lumley 2011) and create the ```pl_logit_tbl``` function so we can easily run the pseudo-likelihood approach for all seven immune marker thresholds and visualize the results in a forest plot. 
+
+```{r}
+### pl_logit_tbl: Pseudo-Likelihood Logistic Regression Model with Empirical Variance
+# Estimates. Approach constructed from tps function in osDesign R package. 
+# Outputs list of model values.
+
+##  Function inputs:
+# poi_var: string of model's exposure variable name
+#  e.g., "MARKER20"
+# outcome_var: string of model's outcome variable name
+#  e.g., "POSTEST"
+# model_formula: string of desired logistic regression formula
+#  e.g., "POSTEST ~ MARKER20 + REGION + COMORB + CALTIMEp1 + risk_score"
+# missing_var: string of indicator of observing the exposure variable name
+#  e.g., "D"
+# strata_var: string of two-phase sampling strata variable name
+#  e.g., "REGION"
+# var_type: string of "Empirical" or "Model" variance
+# learner: string of method of estimation allowed from tps function 
+#  e.g., pseudo-likelihood ("PL"), weighted likelihood ("WL"), or
+#  maximum likelihood ("ML")
+# df: dataset with complete information on missing_var and all variables in model_formula
+#  except poi_var
+#  e.g., phase1.df
+
+## Function outputs:
+# Data.Frame with df Information and Model Coefficients
+
+pl_logit_tbl <- function(poi_var = "A", outcome_var = "Y",
+                               model_formula, missing_var = "D",
+                           strata_var = "STRATA", var_type = c("Empirical", "Model"),
+                               learner = "PL", df){
+  
+  # Table of STRATA and Cases
+  strata_tbl <- table(df[[strata_var]], df[[outcome_var]])
+  
+  # Identify Phase Two Data
+  complete.df <- df %>% filter(get(missing_var) == 1)
+  
+  # High Immune Markers in Cases and Noncases 
+  tbl <- addmargins(table(complete.df[[poi_var]], 
+                          complete.df[[outcome_var]]))
+  proptbl <- round(prop.table(table(complete.df[[poi_var]], 
+                                   complete.df[[outcome_var]]),2)*100, 0)
+  tblcounts <- paste0(tbl[2,1:2], "/", tbl[3,1:2], " (", proptbl[2,], ")")
+  
+  
+  ## Run Pseudo-Likelihood Logistic Regression Model
+  mod <- tps(eval(parse(text = model_formula)), data = complete.df,
+             nn0 = strata_tbl[ , "0"], nn1 = strata_tbl[ ,"1"],
+             group = complete.df[[strata_var]], method = learner, cohort = FALSE)
+  
+  
+  ## Calculate relevant statistics
+  coef <-  mod$coef[which(names(mod$coef) == poi_var)]
+  se <- ifelse( var_type == "Model", 
+                sqrt( mod$covm[poi_var, poi_var] ) , 
+                sqrt( mod$cove[poi_var, poi_var] ) )
+  rr <- exp(coef)
+  z <- qnorm(0.975)
+  rrCIlow <- format(round(exp(coef - z*se), 2), nsmall = 2)
+  rrCIhigh <- format(round(exp(coef + z*se), 2), nsmall = 2)
+  rrci <- paste0(format(round(rr , 2), nsmall = 2), " (",  rrCIlow, ", ", rrCIhigh, ")")
+  pval = format(round(2*(1 - pnorm(abs(coef/se))), 3), nsmall = 3)
+  
+  ## Calculating relevant statistics
+  return(data.frame(StatMethod =  paste0(learner, " Logit ",var_type," SE"), 
+                    Characteristic = poi_var,
+                    nPhase2 = nrow(complete.df),
+                    Cases = tblcounts[2],
+                    Noncases = tblcounts[1],
+                    LowCases = sum(complete.df[[outcome_var]] == 1 & 
+                                     complete.df[[poi_var]] == 0),
+                    HighCases = sum(complete.df[[outcome_var]] == 1 & 
+                                      complete.df[[poi_var]] == 1),
+                    logRR = format(round(coef, 2), nsmall = 2),
+                    logRRCIlow = format(round( coef - z*se, 2), nsmall = 2),
+                    logRRCIhigh = format(round( coef + z*se, 2), nsmall = 2),
+                    RRCI = rrci,
+                    PVal = pval,
+                    Form = model_formula,
+                    stringsAsFactors = FALSE)) }
+```
+
+```{r}
+# Fit Pseudo-Likelihood Logistic Regression for 20th-80th Immune Marker Quantiles
+pl.tbl0 <- map_dfr(marker_vars, 
+                   function(i) pl_logit_tbl(poi_var = i,
+                    outcome_var = "POSTEST",
+                    model_formula = paste0("POSTEST ~ ", i, 
+                                     " + REGION + CALTIMEp1 + COMORB + risk_score"), 
+                    missing_var = "D",
+                    strata_var = "REGION",
+                    var_type = "Empirical",
+                    learner = "PL",
+                    df = phase1.df))
+```
+
+We run ```pl_logit_tbl``` to obtain the estimated causal conditional risk ratios of COVID-19 by the 20th, 30th, 40th, 50th, 60th, 70th, and 80th immune marker quantiles using pseudo-likelihood logistic regression. 
+
+
+
+## TND COVID-19 Vaccine Effectiveness Using Ordinary Logistic Regression
+We also estimate the TND sample conditional odds ratio of COVID-19 using an ordinary logistic regression of COVID-19 adjusted for immune marker threshold, risk score of acquiring COVID-19, presence of comorbidities, US Census region, and tertile calendar time of SARS-CoV-2 testing. We use the ```glm``` function to implement the ordinary logistic regression and create the ```ordlogit_tbl``` function so we can easily run the method for all seven immune marker thresholds and visualize the results in a forest plot. 
+
+```{r}
+### ordlogit_tbl: Ordinary Logistic Regression Model.
+#   Approach implemented using glm. Outputs list of model values
+
+## Function inputs:
+# poi_var: string of exposure of interest variable name
+#  e.g., "MARKER20"
+# outcome_var: string of outcome variable name
+#  e.g., "POSTEST"
+# model_formula: string of desired logistic regression formula
+#  e.g., "POSTEST ~ MARKER20 + REGION + COMORB + CALTIMEp1 + risk_score"
+# missing_var: string of indicator of observing the exposure variable name
+#  e.g., "D"
+# df: dataset with complete information on missing_var and all variables in model_formula
+#  except poi_var (function excludes participants missing poi_var for analyses)
+#  e.g., phase1.df or phase2.df
+
+## Function outputs:
+# list that contains parameters and full glm model
+ordlogit_tbl <- function(poi_var = "A", outcome_var = "Y", 
+                         model_formula,
+                          missing_var = "D", df){
+  
+  # Only Analyze Phase 2 Data
+  complete.df <- df %>% filter(get(missing_var) == 1)
+  
+  # High Immune Markers in Cases and Noncases 
+  tbl <- addmargins(table(complete.df[[poi_var]],
+                          complete.df[[outcome_var]]))
+  proptbl <- round(prop.table(table(complete.df[[poi_var]],
+                         complete.df[[outcome_var]]), 2)*100, 0)
+  tblcounts <- paste0(tbl[2,1:2], "/", tbl[3,1:2], " (", proptbl[2,], ")")
+  
+  
+  ## Run Ordinary Logistic Regression Model
+  mod <- glm(eval(parse(text = model_formula)), 
+             data = complete.df, family = "binomial")
+  glm.mod <- summary(mod)
+  
+  ## Calculate relevant statistics
+  coef <- glm.mod$coefficients[poi_var, "Estimate"]
+  se <- glm.mod$coefficients[poi_var, "Std. Error"]
+  rr <- format(round(exp(coef), 2), nsmall = 2)
+  z <- qnorm(0.975)
+  rrCIlow <- format( round( exp(coef - z*se), 2), nsmall = 2)
+  rrCIhigh <- format( round( exp(coef + z*se), 2), nsmall = 2)
+  rrci <- paste0(rr, " (",  rrCIlow, ", ", rrCIhigh, ")")
+  pval = format( round(glm.mod$coefficients[poi_var,"Pr(>|z|)"], 3), nsmall = 3)
+  
+  return(data.frame(StatMethod = "Ordinary", 
+              Characteristic = poi_var,
+              nPhase2 = nrow(complete.df),
+              Cases = tblcounts[2],
+              Noncases = tblcounts[1],
+              LowCases = sum(complete.df[[outcome_var]] == 1 & 
+                               complete.df[[poi_var]] == 0),
+              HighCases = sum(complete.df[[outcome_var]] == 1 & 
+                                complete.df[[poi_var]] == 1),
+              logRR = format(round(coef, 2), nsmall = 2 ),
+              logRRCIlow = format( round( coef - z*se, 2), nsmall = 2),
+              logRRCIhigh = format( round( coef + z*se, 2), nsmall = 2) ,
+              RRCI = rrci,
+              PVal = pval,
+              Form = model_formula,
+              stringsAsFactors = FALSE)) }
+```
+
+```{r}
+# Fit Ordinary Logistic Regression for 20th-80th Immune Marker Quantiles
+ord.tbl0 <- map_dfr(marker_vars, 
+                   function(i) ordlogit_tbl(
+                    poi_var = i,
+                    outcome_var = "POSTEST",
+                    model_formula = paste0("POSTEST ~ ", i, 
+                                     " + REGION + CALTIMEp1 + COMORB + risk_score"), 
+                    missing_var = "D",
+                    df = phase1.df))
+```
+
+We run ```ordlogit_tbl``` to obtain the estimated causal conditional risk ratios of COVID-19 by the 20th, 30th, 40th, 50th, 60th, 70th, and 80th immune marker quantiles using ordinary logistic regression. 
+
+
+## Summary of Results
+
+We use the ```forestplot``` function from the ```forestplot``` R package to visualize the causal conditional risk ratios of COVID-19 by immune marker threshold and statistical approach.
+```{r echo=FALSE, fig.width=8.2, fig.height=6, fig.align='center'}
+## Dataset with All Three Statistical Approaches
+marker.tbl0<- rbind(ord.tbl0, pl.tbl0, semi.tbl0)
+
+marker.tbl <- marker.tbl0 %>% arrange(Characteristic,desc(StatMethod)) %>% 
+  mutate(
+    StatMethod0 = StatMethod,
+    StatMethod = case_when( 
+      StatMethod0 == "Ordinary" ~ "Ordinary Logistic",
+      StatMethod0 == "PL Logit Empirical SE" ~ "PL Logistic",
+      StatMethod0 == "Super Learner" ~ "TMLE"),
+    PVal0 = PVal,
+    PVal = ifelse(as.numeric(PVal0)<0.001, "<0.001", PVal0),
+    Cases0 = Cases,
+    Noncases0 = Noncases,
+    Cases = "",
+    Noncases = "") 
+
+
+# Make forest plot
+rrlabs<- log(c(.05, .1, 0.25,0.5,0.75, 1, 1.5,  2.5)) 
+rrlabels <- c(".05",".1",".25",".5",".75","1","1.5","2.5")
+attr(rrlabs, "labels") <- rrlabels
+
+forestplot(marker.tbl[c("StatMethod", "Cases", "Noncases", "RRCI","PVal")],
+           mean = as.numeric(marker.tbl$logRR),
+           lower = as.numeric(marker.tbl$logRRCIlow),
+           upper = as.numeric(marker.tbl$logRRCIhigh),
+           new_page = TRUE,
+           align = c("l","l","c","c","c"),
+           xlab = "Risk Ratio",
+           clip = log(c(0.05,2.5)),
+           colgap = unit(4,"mm"),
+           xlog = FALSE,
+           xticks = rrlabs,
+           col = fpColors(box = "black",
+                          line = "black"),
+           boxsize = 0.4, 
+           lwd.ci = 1.5,
+           ci.vertices.height = 0.30,
+           graphwidth = unit(40, 'mm'),#unit(80, 'mm'),
+           txt_gp = fpTxtGp(label = gpar(cex = 1),
+                            ticks = gpar(cex = 1),
+                            xlab  = gpar(cex = 1),
+                            summary = gpar(fontfamily="", cex=1.1))) %>%
+  fp_add_header(StatMethod = c("Statistical"," Method"),
+                Cases = c(fp_align_center("Cases"),fp_align_right("Above") ),
+                Noncases = c( fp_align_center("Noncases"),"Threshold/Total (%)"),
+                RRCI= c(fp_align_center("COVID-19"), 
+                        fp_align_center("RR (95% CI)")),
+                PVal = c(fp_align_center("P-Value"),""))%>% 
+  fp_add_lines(h_3 = gpar(lty=1)) %>% 
+  fp_append_row(StatMethod = paste0("≥ ",round(marker_quant["20%"],0)," Units"),
+                Cases = subset(marker.tbl0, Characteristic =="MARKER20")[1, "Cases"],
+                Noncases = subset(marker.tbl0, Characteristic =="MARKER20")[1, "Noncases"],
+                position=3, is.summary = TRUE) %>%
+  fp_append_row(StatMethod = paste0("≥ ",round(marker_quant["30%"],0)," Units"),
+                Cases = subset(marker.tbl0, Characteristic =="MARKER30")[1, "Cases"],
+                Noncases = subset(marker.tbl0, Characteristic =="MARKER30")[1, "Noncases"],
+                position=7, is.summary = TRUE) %>%
+  fp_append_row(StatMethod = paste0("≥ ",round(marker_quant["40%"],0)," Units"),
+                Cases = subset(marker.tbl0, Characteristic =="MARKER40")[1, "Cases"],
+                Noncases = subset(marker.tbl0, Characteristic =="MARKER40")[1, "Noncases"],
+                position=11, is.summary = TRUE) %>%
+  fp_append_row(StatMethod = paste0("≥ ",round(marker_quant["50%"],0)," Units"),
+                Cases = subset(marker.tbl0, Characteristic =="MARKER50")[1, "Cases"],
+                Noncases = subset(marker.tbl0, Characteristic =="MARKER50")[1, "Noncases"],
+                position=15, is.summary = TRUE) %>%
+  fp_append_row(StatMethod = paste0("≥ ",round(marker_quant["60%"],0)," Units"),
+                Cases = subset(marker.tbl0, Characteristic =="MARKER60")[1, "Cases"],
+                Noncases = subset(marker.tbl0, Characteristic =="MARKER60")[1, "Noncases"],
+                position=19, is.summary = TRUE) %>%
+  fp_append_row(StatMethod = paste0("≥ ",round(marker_quant["70%"],0)," Units"),
+                Cases = subset(marker.tbl0, Characteristic =="MARKER70")[1, "Cases"],
+                Noncases = subset(marker.tbl0, Characteristic =="MARKER70")[1, "Noncases"],
+                position=23, is.summary = TRUE) %>%
+  fp_append_row(StatMethod = paste0("≥ ",format(round(marker_quant["80%"], 0), nsmall=0)," Units"),
+                Cases = subset(marker.tbl0, Characteristic =="MARKER80")[1, "Cases"],
+                Noncases = subset(marker.tbl0, Characteristic =="MARKER80")[1, "Noncases"],
+                position=27, is.summary = TRUE)%>%
+  fp_decorate_graph(graph.pos = 4)
+
+```
+
+The estimated causal conditional risk ratios of COVID-19 for all three statistical methods are highly concordant and have similar confidence intervals.
+
+# References
+
+Andrews, Leah I. B., M. Elizabeth Halloran, Kathleen M. Neuzil, Lars van der Laan, Yunda Huang, Jessica Andriesen, Mayur Patel, Leigh H. Fisher, Holly Janes, Nadine Rouphael, Stephen R. Walsh, Deborah A. Theodore, Hong-Van Tieu, Magdalena Sobieszczyk, Hana M. El Sahly, Lindsey R. Baden, Ann R. Falsey, Thomas B. Campbell, Colleen F. Kelley, Catherine Mary Healy, Lilly Immergluck, Benjamin Luft, Ian Hirsch, Guy de Bruyn, Carla Truyers, Frances Priddy, Kelsey M. Sumner, Brendan Flannery, Dean Follmann, Peter B. Gilbert, and COVID-19 Prevention Network (CoVPN). 2025. “Evaluating the Test-Negative Design for COVID-19 Vaccine Effectiveness Using Randomized Trial Data: A Secondary Cross-Protocol Analysis of 5 Randomized Clinical Trials.” JAMA Network Open 8(5):e2512763. doi:10.1001/jamanetworkopen.2025.12763.
+
+Chernozhukov, Victor, Denis Chetverikov, Mert Demirer, Esther Duflo, Christian Hansen, Whitney Newey, and James Robins. 2018. “Double/Debiased Machine Learning for Treatment and Structural Parameters.” The Econometrics Journal 21(1):C1–68. doi:10.1111/ectj.12097.
+
+De Serres, G., D. M. Skowronski, X. W. Wu, and C. S. Ambrose. 2013. “The Test-Negative Design: Validity, Accuracy and Precision of Vaccine Efficacy Estimates Compared to the Gold Standard of Randomised Placebo-Controlled Clinical Trials.” Eurosurveillance 18(37). doi:10.2807/1560-7917.ES2013.18.37.20585.
+
+El Sahly, Hana M., Lindsey R. Baden, Brandon Essink, Susanne Doblecki-Lewis, Judith M. Martin, Evan J. Anderson, Thomas B. Campbell, Jesse Clark, Lisa A. Jackson, Carl J. Fichtenbaum, Marcus Zervos, Bruce Rankin, Frank Eder, Gregory Feldman, Christina Kennelly, Laurie Han-Conrad, Michael Levin, Kathleen M. Neuzil, Lawrence Corey, Peter Gilbert, Holly Janes, Dean Follmann, Mary Marovich, Laura Polakowski, John R. Mascola, Julie E. Ledgerwood, Barney S. Graham, Allison August, Heather Clouting, Weiping Deng, Shu Han, Brett Leav, Deb Manzo, Rolando Pajon, Florian Schödel, Joanne E. Tomassini, Honghong Zhou, and Jacqueline Miller. 2021. “Efficacy of the mRNA-1273 SARS-CoV-2 Vaccine at Completion of Blinded Phase.” New England Journal of Medicine 385(19):1774–85. doi:10.1056/NEJMoa2113017.
+
+Follmann, Dean, Lauren Dang, Eric Chu, Jonathan Fintzi, Holly Janes, Peter B. Gilbert, Leah I. B. Andrews, Leonid Serebryannyy, Robin Carroll, Bob Lin, Richard Koup, Jon Toma, L. Weiping Deng, Frances Priddy, Avika Dixit, Honghong Zhou, Lindsey Baden, and Hana M. El Sahly. 2025. “A Test-Negative Design for Immune Correlates Approximates a Traditional Exposure Proximal Design but Requires Far Fewer Blood Samples.” The Journal of Infectious Diseases jiaf572. doi:10.1093/infdis/jiaf572.
+
+Gilbert, Peter B., David C. Montefiori, Adrian B. McDermott, Youyi Fong, David Benkeser, Weiping Deng, Honghong Zhou, Christopher R. Houchens, Karen Martins, Lakshmi Jayashankar, Flora Castellino, Britta Flach, Bob C. Lin, Sarah O’Connell, Charlene McDanal, Amanda Eaton, Marcella Sarzotti-Kelsoe, Yiwen Lu, Chenchen Yu, Bhavesh Borate, Lars W. P. van der Laan, Nima S. Hejazi, Chuong Huynh, Jacqueline Miller, Hana M. El Sahly, Lindsey R. Baden, Mira Baron, Luis De La Cruz, Cynthia Gay, Spyros Kalams, Colleen F. Kelley, Michele P. Andrasik, James G. Kublin, Lawrence Corey, Kathleen M. Neuzil, Lindsay N. Carpp, Rolando Pajon, Dean Follmann, Ruben O. Donis, Richard A. Koup, Immune Assays Team, Moderna, Inc. Team, Coronavirus Vaccine Prevention Network (CoVPN)/Coronavirus Efficacy (COVE) Team, and United States Government (USG)/COVPN Biostatistics Team. 2022. “Immune Correlates Analysis of the mRNA-1273 COVID-19 Vaccine Efficacy Clinical Trial.” Science 375(6576):43–50. doi:10.1126/science.abm3425.
+
+Haneuse, Sebastien, Takumi Saegusa, and Thomas Lumley. 2011. “osDesign: An R Package for the Analysis, Evaluation, and Design of Two-Phase and Case-Control Studies.” Journal of Statistical Software 43:1–29. doi:10.18637/jss.v043.i11.
+
+van der Laan, Lars. [2021] 2024. “Causalglm: Interpretable and Robust Causal Inference for Heterogeneous Treatment Effects Using Generalized Linear Models with Targeted Machine-Learning.”
+
+van der Laan, Mark J., Eric C. Polley, and Alan E. Hubbard. 2007. “Super Learner.” Statistical Applications in Genetics and Molecular Biology 6:Article25. doi:10.2202/1544-6115.1309.
+
+Painter, Mark M., Timothy S. Johnston, Kendall A. Lundgreen, Jefferson J. S. Santos, Juliana S. Qin, Rishi R. Goel, Sokratis A. Apostolidis, Divij Mathew, Bria Fulmer, Justine C. Williams, Michelle L. McKeague, Ajinkya Pattekar, Ahmad Goode, Sean Nasta, Amy E. Baxter, Josephine R. Giles, Ashwin N. Skelly, Laura E. Felley, Maura McLaughlin, Joellen Weaver, Oliva Kuthuru, Jeanette Dougherty, Sharon Adamski, Sherea Long, Macy Kee, Cynthia Clendenin, Ricardo da Silva Antunes, Alba Grifoni, Daniela Weiskopf, Alessandro Sette, Alexander C. Huang, Daniel J. Rader, Scott E. Hensley, Paul Bates, Allison R. Greenplate, and E. John Wherry. 2023. “Prior Vaccination Promotes Early Activation of Memory T Cells and Enhances Immune Responses during SARS-CoV-2 Breakthrough Infection.” Nature Immunology 24(10):1711–24. doi:10.1038/s41590-023-01613-y.
+
+Sumner, Kelsey M., Ruchi Yadav, Emma K. Noble, Ryan Sandford, Devyani Joshi, Sara Y. Tartof, Karen J. Wernli, Emily T. Martin, Manjusha Gaglani, Richard K. Zimmerman, H. Keipp Talbot, Carlos G. Grijalva, Edward A. Belongia, Jessie R. Chung, Eric Rogier, Melissa M. Coughlin, and Brendan Flannery. 2024. “Anti–SARS-CoV-2 Antibody Levels Associated With COVID-19 Protection in Outpatients Tested for SARS-CoV-2, US Flu Vaccine Effectiveness Network, October 2021–June 2022.” The Journal of Infectious Diseases 230(1):45–54. doi:10.1093/infdis/jiae090.
+
+
+
