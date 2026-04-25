@@ -2,7 +2,7 @@
 # "Targeted maximum likelihood estimation of vaccine effectiveness 
 # and immune correlates in test-negative design studies with missing data" 
 # Code Created By: Leah I. B. Andrews
-# Date: 04/10/26
+# Last Upated: 04/21/26
 
 
 # Set library path
@@ -19,11 +19,11 @@ print(Sys.time())
 run_on_cluster(
   first = {
     #file_path <- "/home/users/landrew2/Dissertation/Project1/"
-    file_path <- "~/Desktop/UW Stuff/IS TND/Code/TND TMLE/semiparametric-tmle-tnd/Simulation/"
+    file_path <- "~/Desktop/UW Stuff/IS TND/Code/TND TMLE/semiparametric-tmle-tnd local/Simulation/"
     source(paste0(file_path,"params.R"))
     source(paste0(file_path,"methods.R"))
-    nsims <- 2 #1000
-    ncores <- 3 #70
+    nsims <- 1000
+    ncores <- 70
     nseed <-  2024 
     stop_error_flag <- FALSE 
     
