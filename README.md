@@ -27,8 +27,12 @@ This code was developed using R version 4.4.0.
 
 - `COVID-19 Vaccine Effectiveness Application.Rmd`: Implements the COVID-19 vaccine effectiveness data application described in the manuscript 
 
-- `COVID-19 Vaccine Effectiveness Application.pdf`: Knitted PDF of `COVID-19 Vaccine Effectiveness Application.Rmd` file
+- `COVID-19-Vaccine-Effectiveness-Application.pdf`: Knitted PDF of `COVID-19 Vaccine Effectiveness Application.Rmd` file
 
-- `COVID VE TMLE Super Learner Model 041326.rds`: RDS file of the TMLE estimator that is described in `COVID-19 Vaccine Effectiveness Application.Rmd` (the .Rmd file loads this RDS file rather than running it to minimize compilation time)
+- `COVID VE TMLE Super Learner Model 041326.rds` (not uploaded): RDS file of the TMLE estimator that is described in `COVID-19 Vaccine Effectiveness Application.Rmd` (the .Rmd file loads this RDS file rather than running it to minimize compilation time). This file is too large to be included on GitHub but can be run using the code provided in `COVID-19 Vaccine Effectiveness Application.Rmd`.
+
+- `Exposure-Proximal Correlates of COVID-19 Application.Rmd`: Implements the COVID-19 immune marker data application described in the manuscript 
+
+- `Exposure-Proximal-Correlates-of-COVID-19-Application.pdf`: Knitted PDF of `Exposure-Proximal Correlates of COVID-19 Application.Rmd` file
     
     
