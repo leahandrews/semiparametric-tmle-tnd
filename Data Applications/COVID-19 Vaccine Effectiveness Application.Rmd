@@ -2,7 +2,7 @@
 title: "Code for 'Targeted Maximum Likelihood Estimation of Vaccine Effectiveness and Immune Correlates in Test-Negative Design Studies with Missing Data'"
 subtitle: "Application 1: Inference on COVID-19 Vaccine Effectiveness"
 author: "Leah I. B. Andrews"
-date: "April 14, 2026"
+date: "April 24, 2026"
 output:
   pdf_document: default
   html_document:
@@ -19,15 +19,15 @@ library(forestplot)
 library(gtsummary)
 ```
 
-This R markdown provides code to perform the analyses from 'Application 1: Inference on COVID-19 Vaccine Effectiveness' of the manuscript "Targeted maximum likelihood estimation of vaccine effectiveness and immune correlates in test-negative design studies with missing data" by L.I.B. Andrews, L. van der Laan, and P. Gilbert. This manuscript introduces a targeted maximum likelihood estimation approach to evaluate COVID-19 vaccine effectiveness in a test-negative design (TND) study cohort. We demonstrate our approach on a TND study cohort sampled from the Moderna Coronavirus Efficacy (COVE) phase 3 randomized placebo-controlled trial (RCT) (El Sahly et al., 2021).
+This R markdown provides code to perform the analyses from 'Application 1: Inference on COVID-19 Vaccine Effectiveness' in the manuscript "Targeted maximum likelihood estimation of vaccine effectiveness and immune correlates in test-negative design studies with missing data" by L.I.B. Andrews, L. van der Laan, and P. Gilbert. This manuscript introduces a targeted maximum likelihood estimation approach to evaluate vaccine effectiveness in a test-negative design (TND) study cohort. We demonstrate our approach on a TND study cohort sampled from the Moderna Coronavirus Efficacy (COVE) phase 3 randomized placebo-controlled trial (RCT) (El Sahly et al. 2021).
 
-The COVE RCT data cannot be shared so instead, we generate a toy RCT dataset to illustrate how our analyses in the manuscript. We apply participant-based sampling with censoring for COVID-19 to the toy RCT dataset to obtain our TND study cohort (De Serres et al., 2013 and Andrews et al., 2025). We then calculate our targeted maximum likelihood estimator (TMLE) and an ordinary logistic regression estimator of TND vaccine effectiveness against symptomatic COVID-19 in the healthcare-seeking population using the TND study cohort. We also estimate RCT vaccine efficacy using a stratified Cox proportional hazards regression model on the entire RCT cohort for comparison. 
+The COVE RCT data cannot be shared so instead, we generate a toy RCT dataset to illustrate how we conducted our analyses in the manuscript. We apply participant-based sampling with censoring for COVID-19 to the toy RCT dataset to obtain our TND study cohort (De Serres et al. 2013; Andrews et al. 2025). We then calculate our targeted maximum likelihood estimator (TMLE) and an ordinary logistic regression estimator of TND vaccine effectiveness against symptomatic COVID-19 in the healthcare-seeking population using the TND study cohort. We also estimate RCT vaccine efficacy using a stratified Cox proportional hazards regression model on the entire RCT cohort for comparison. 
 
 # Generating Data
-Since we cannot share the COVE data, we generate a toy phase 3 COVID-19 RCT cohort and identify RCT participants who would have been eligible for a TND study from this RCT cohort. This data-generating code has been adapted from "Evaluating the Test-Negative Design for COVID-19 Vaccine Effectiveness Using Randomized Trial Data: A Secondary Cross-Protocol Analysis of 5 Randomized Clinical Trials" by Andrews et al. in JAMA Network Open in 2025 (https://github.com/leahandrews/eval-tnd-w-rcts).
+Since we cannot share the COVE data, we generate a toy phase 3 COVID-19 RCT cohort and identify RCT participants who would have been eligible for a TND study from this RCT cohort. This data-generating code has been adapted from `Evaluation of TND with RCTs.Rmd`, which provides code for the Andrews et al. 2025 article, "Evaluating the Test-Negative Design for COVID-19 Vaccine Effectiveness Using Randomized Trial Data: A Secondary Cross-Protocol Analysis of 5 Randomized Clinical Trials" (https://github.com/leahandrews/eval-tnd-w-rcts).
 
 ## RCT Cohort
-Our toy RCT dataset consists of 30,000 participants who were randomly assigned to receive one dose of the COVID-19 vaccine or placebo at a 1:1 ratio within three strata. The blinded phase of the RCT takes place from August 1, 2020 to March 31, 2021. For simplicity, all participants were vaccinated in the first two weeks of August and no participants were unblinded early or lost to follow-up. At RCT enrollment, age, sex at birth, race/ethnicity, geographic region, and presence of any comorbidities were measured for all participants. There are no missing data on any covariates.
+Our toy RCT dataset consists of 30,000 participants who were randomly assigned to receive one dose of the COVID-19 vaccine or placebo at a 1:1 ratio within three randomization strata. The blinded phase of the RCT takes place from August 1, 2020 to March 31, 2021. For simplicity, all participants were vaccinated in the first two weeks of August and no participants were unblinded early or lost to follow-up. At RCT enrollment, age, sex at birth, race and ethnicity, geographic region, and presence of any comorbidities were measured for all participants. There are no missing data on any covariates.
 ```{r}
 ## Demographic and Clinical Characteristics for RCT Cohort
 # One Row per Participant
@@ -38,7 +38,7 @@ demo.df00 <- data.frame(USUBJID = paste0("ID", 1:nsubj),
                AGE = round(runif(nsubj, min = 18, max = 80)),
                SEX = sample(c("F", "M"), nsubj, replace = TRUE),
                
-               # Dichotomized Race/Ethnicity (Hispanic/Latino or Non-White vs. 
+               # Dichotomized Race and Ethnicity (Hispanic/Latino or Non-White vs. 
                # Non-Hispanic/Non-Latino White)
                POC = sample(c("POC", "White"), nsubj, 
                             replace = TRUE, prob = c(1/3, 2/3)),
@@ -76,7 +76,7 @@ During the RCT, participants may experience an illness episode or symptomatic pe
 Participants obtain 1-10 SARS-CoV-2 diagnostic tests before and/or during an illness episode. While an illness episode may be truly caused by SARS-CoV-2 (```eps_sars_inf=1```), our SARS-CoV-2 test results (```POSTEST```) are subject to misclassification (100\% specificity, 85\% sensitivity). Thus, the unobserved true SARS-CoV-2 infection status of an illness episode, ```eps_sars_inf```, does not always match the observed SARS-CoV-2 test results from an illness episode, ```POSTEST```.
 
 ```{r}
-# Adding Illness Episode Information
+## Adding Illness Episode Information
 demo.df <- demo.df0 %>% mutate(
      # True SARS-CoV-2 Infection Status at Any Point during Blinded Phase 
      # (Unknown in Observed Clinical Data)
@@ -141,7 +141,7 @@ We use the demographic and testing data to identify RCT COVID-19 cases (```RCTCA
 ```{r}
 ## Creating RCT Analysis Dataset
 
-# Identify First SARS-CoV-2 Positive Test from RCT COVID Cases 
+# Identify First SARS-CoV-2 Positive Test from RCT COVID-19 Cases 
 # (In this Example Dataset, All Illness Episodes Met the Symptom Definition)
 rct.case.df <- test.df %>% 
   # Only take those who test SARS-CoV-2 Positive
@@ -262,7 +262,7 @@ rct.veCIhigh <- round(1 - summary(rct.mod)$conf.int["VACCINE","lower .95"],3)*10
 From the RCT cohort of `r nsubj` participants, we estimate vaccine efficacy, defined as 1 minus the hazard ratio (vaccine vs. placebo), using a Cox proportional hazards (PH) regression model stratified by strata used for randomization ($<$ 65 years old with comorbidities, $<$ 65 years old without comorbidities, and $\geq$ 65 years old). RCT vaccine efficacy against COVID-19 is `r rct.ve`\% (95\% CI: `r rct.veCIlow`, `r rct.veCIhigh`).
 
 ## TND COVID-19 Vaccine Effectiveness Using Targeted Maximum Likelihood Estimation Under Semiparametric Logistic Regression Model
-To calculate our TMLE, we use the ```causalglm``` R package developed by Lars van der Laan (https://tlverse.org/causalglm/), which implements semiparametric and nonparametric generalized linear models using targeted maximum likelihood estimation to conduct causal inference on heterogeneous treatment effects. The package relies on ```tlverse/tmle3``` for targeted maximum likelihood estimation and ```tlverse/sl3``` and ```tlverse/hal9001``` for machine-learning. The package is in active development so please contact Lars van der Laan if there are any issues or concerns (lvdlaan@uw.edu). Make sure to load the most up-to-date version of these packages from Github.
+We calculate a TMLE of the TND sample conditional odds ratio of COVID-19 using a partially linear logistic regression model. We use the ```causalglm``` R package developed by Lars van der Laan (https://tlverse.org/causalglm/), which implements semiparametric and nonparametric generalized linear models using targeted maximum likelihood estimation to conduct causal inference on heterogeneous treatment effects. The package relies on ```tlverse/tmle3``` for targeted maximum likelihood estimation and ```tlverse/sl3``` and ```tlverse/hal9001``` for machine-learning. The package is in active development so please contact Lars van der Laan if there are any issues or concerns (lvdlaan@uw.edu). Make sure to load the most up-to-date version of these packages from Github.
 ```{r eval=FALSE}
 #  Install devtools CRAN package
 if(!require(devtools)) {
@@ -280,7 +280,7 @@ devtools::install_github("tlverse/sl3@Larsvanderlaan-formula_fix")
 library(causalglm)
 ```
 
-While our data does not have confounding, to mimic TND studies that must account for confounding, we fit our TMLE of vaccination status adjusted for SARS-CoV-2 status, age, sex assigned at birth, race/ethnicity, region, comorbidities, and quantitative calendar time. We use a 10-fold cross-fitted ensemble super learner that considers a library of learners including the sample mean, logistic regression models, general additive models, multivariate adaptive regression splines, lasso regression, ridge regression, highly adaptive lasso, random forests, and gradient boosting for estimation. The library also includes screened logistic regression and general additive model learners, which only include covariates with nonzero coefficients based on lasso regression. We assess the candidate learners using a binomial log-likelihood loss and 10-fold cross-validation and combine the nuisance function predictions using non-negative least squares regression.
+While our data does not have confounding, to mimic TND studies that must account for confounding, we fit our TMLE of vaccination status adjusted for SARS-CoV-2 status, age, sex assigned at birth, race and ethnicity, region, comorbidities, and quantitative calendar time. We use a 10-fold cross-fitted ensemble super learner that considers a library of learners including the sample mean, logistic regression models, general additive models, multivariate adaptive regression splines, lasso regression, ridge regression, highly adaptive lasso, random forests, and gradient boosting for estimation (van der Laan, Polley, and Hubbard 2007; Chernozhukov et al. 2018). The library also includes screened logistic regression and general additive model learners, which only include covariates with nonzero coefficients based on lasso regression. We assess the candidate learners using a binomial log-likelihood loss and 10-fold cross-validation and combine the nuisance function predictions using non-negative least squares regression.
 
 ```{r}
 ## Ensemble Super Learner
@@ -393,7 +393,7 @@ print(semi.mod)
 # Example Output
 summary(semi.mod)
 ```
-Using our library of learners, our TMLE approach takes 40 minutes so we ran it beforehand and loaded into this document to minimize the compilation time. ```print``` of an ```spglm``` object reports the object and equation. ```summary``` of an ```spglm``` object reports summary statistics for the sample log conditional odds ratio of vaccination by case status, adjusting for covariates. ```tmle_est``` is the log conditional odds ratio and ```psi_exp``` is the conditional odds ratio. ```lower_exp``` and ```upper_exp``` are the exponentiated lower and upper bounds of the log conditional odds ratio 95\% confidence interval.
+Using our library of learners, our TMLE approach takes 40 minutes so we ran it beforehand and loaded it into this document to minimize the compilation time. ```print``` of an ```spglm``` object reports the object and equation. ```summary``` of an ```spglm``` object reports summary statistics for the sample log conditional odds ratio of vaccination by case status, adjusting for covariates. ```tmle_est``` is the log conditional odds ratio and ```psi_exp``` is the conditional odds ratio. ```lower_exp``` and ```upper_exp``` are the exponentiated lower and upper bounds of the log conditional odds ratio 95\% confidence interval.
 
 ```{r echo = FALSE}
 # Participant with Censoring
@@ -405,7 +405,7 @@ semi.veCIhigh <- round(1 - coef(semi.mod)$lower_exp, 3)*100
 Assuming the eleven identifying assumptions specified in our manuscript hold, we can interpret the TND sample conditional odds ratio as the causal conditional risk ratio of COVID-19 comparing vaccinated to unvaccinated healthcare-seeking individuals with the same covariates. Then, calculating 1 minus the causal conditional risk ratio, we estimate that the TND vaccine effectiveness against symptomatic COVID-19 in healthcare-seeking individuals with the same covariates is `r semi.ve`\% (95\% CI: `r semi.veCIlow`, `r semi.veCIhigh`) using the targeted maximum likelihood estimation approach.
 
 ## TND COVID-19 Vaccine Effectiveness Using Ordinary Logistic Regression
-We also estimate the TND sample odds ratio of COVID-19 adjusted for vaccination status, age, sex assigned at birth, race/ethnicity, region, comorbidities, and two-week calendar time interval main effects using an ordinary logistic regression.
+We also estimate the TND sample odds ratio of COVID-19 adjusted for vaccination status, age, sex assigned at birth, race and ethnicity, region, comorbidities, and two-week calendar time interval main effects using an ordinary logistic regression.
 ```{r}
 ord.mod <- glm(POSTEST ~ VACCINE + AGE + SEX + POC + REGION +
                        COMORB + TWOWEEK, data = part.wcc.df, 
@@ -583,11 +583,15 @@ TND vaccine effectiveness estimates from both statistical methods are highly con
 
 # References
 
-1. El Sahly HM, Baden LR, Essink B, et al. Efficacy of the mRNA-1273 SARS-CoV-2 Vaccine at Completion of Blinded Phase. N Engl J Med. 2021;385(19):1774-1785. doi:10.1056/NEJMoa2113017
+Andrews, Leah I. B., M. Elizabeth Halloran, Kathleen M. Neuzil, Lars van der Laan, Yunda Huang, Jessica Andriesen, Mayur Patel, Leigh H. Fisher, Holly Janes, Nadine Rouphael, Stephen R. Walsh, Deborah A. Theodore, Hong-Van Tieu, Magdalena Sobieszczyk, Hana M. El Sahly, Lindsey R. Baden, Ann R. Falsey, Thomas B. Campbell, Colleen F. Kelley, Catherine Mary Healy, Lilly Immergluck, Benjamin Luft, Ian Hirsch, Guy de Bruyn, Carla Truyers, Frances Priddy, Kelsey M. Sumner, Brendan Flannery, Dean Follmann, Peter B. Gilbert, and COVID-19 Prevention Network (CoVPN). 2025. “Evaluating the Test-Negative Design for COVID-19 Vaccine Effectiveness Using Randomized Trial Data: A Secondary Cross-Protocol Analysis of 5 Randomized Clinical Trials.” JAMA Network Open 8(5):e2512763. doi:10.1001/jamanetworkopen.2025.12763.
 
-2. De Serres G, Skowronski DM, Wu XW, Ambrose CS. The test-negative design: validity, accuracy and precision of vaccine efficacy estimates compared to the gold standard of randomised placebo-controlled clinical trials. Eurosurveillance. 2013;18(37). doi:10.2807/1560-7917.ES2013.18.37.20585
+Chernozhukov, Victor, Denis Chetverikov, Mert Demirer, Esther Duflo, Christian Hansen, Whitney Newey, and James Robins. 2018. “Double/Debiased Machine Learning for Treatment and Structural Parameters.” The Econometrics Journal 21(1):C1–68. doi:10.1111/ectj.12097.
 
-3. Andrews LIB, Halloran ME, Neuzil KM, et al. Evaluating the Test-Negative Design for COVID-19 Vaccine Effectiveness Using Randomized Trial Data: A Secondary Cross-Protocol Analysis of 5 Randomized Clinical Trials. JAMA Network Open. 2025;8(5):e2512763. doi:10.1001/jamanetworkopen.2025.12763
+De Serres, G., D. M. Skowronski, X. W. Wu, and C. S. Ambrose. 2013. “The Test-Negative Design: Validity, Accuracy and Precision of Vaccine Efficacy Estimates Compared to the Gold Standard of Randomised Placebo-Controlled Clinical Trials.” Eurosurveillance 18(37). doi:10.2807/1560-7917.ES2013.18.37.20585.
 
-4. van der Laan L. causalglm: Interpretable and robust causal inference for heterogeneous treatment effects using generalized linear models with targeted machine-learning. Published online June 2, 2024. Accessed August 27, 2024. https://github.com/tlverse/causalglm
+El Sahly, Hana M., Lindsey R. Baden, Brandon Essink, Susanne Doblecki-Lewis, Judith M. Martin, Evan J. Anderson, Thomas B. Campbell, Jesse Clark, Lisa A. Jackson, Carl J. Fichtenbaum, Marcus Zervos, Bruce Rankin, Frank Eder, Gregory Feldman, Christina Kennelly, Laurie Han-Conrad, Michael Levin, Kathleen M. Neuzil, Lawrence Corey, Peter Gilbert, Holly Janes, Dean Follmann, Mary Marovich, Laura Polakowski, John R. Mascola, Julie E. Ledgerwood, Barney S. Graham, Allison August, Heather Clouting, Weiping Deng, Shu Han, Brett Leav, Deb Manzo, Rolando Pajon, Florian Schödel, Joanne E. Tomassini, Honghong Zhou, and Jacqueline Miller. 2021. “Efficacy of the mRNA-1273 SARS-CoV-2 Vaccine at Completion of Blinded Phase.” New England Journal of Medicine 385(19):1774–85. doi:10.1056/NEJMoa2113017.
+
+van der Laan, Lars. [2021] 2024. “Causalglm: Interpretable and Robust Causal Inference for Heterogeneous Treatment Effects Using Generalized Linear Models with Targeted Machine-Learning.”
+
+van der Laan, Mark J., Eric C. Polley, and Alan E. Hubbard. 2007. “Super Learner.” Statistical Applications in Genetics and Molecular Biology 6:Article25. doi:10.2202/1544-6115.1309.
 
